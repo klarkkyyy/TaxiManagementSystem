@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="LARGA.ManagerWeb/LARGA.ManagerWeb.csproj" />
+  <Project Path="LARGA.Shared.Models/LARGA.Shared.Models.csproj" />
+  <Project Path="LARGA.SharedCore/LARGA.SharedCore.csproj" />
+</Solution>
