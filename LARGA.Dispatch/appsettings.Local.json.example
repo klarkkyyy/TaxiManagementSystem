@@ -1,0 +1,12 @@
+{
+  "Email": {
+    "Host": "smtp.gmail.com",
+    "Port": 587,
+    "Username": "your.address@gmail.com",
+    "Password": "your-16-character-app-password"
+  },
+  "Weather": {
+    "Latitude": "14.5995",
+    "Longitude": "120.9842"
+  }
+}

@@ -1,0 +1,69 @@
+@page "/drivers"
+@inject IDbContextFactory<AppDb> DbFactory
+
+<PageTitle>Drivers</PageTitle>
+
+<h2 class="page-title">Drivers</h2>
+<p class="page-sub">Drivers and the taxis they drive. Drivers do not log in.</p>
+
+<div class="row g-3">
+    <div class="col-lg-8">
+        <div class="card"><div class="card-body table-responsive">
+            <table class="table">
+                <thead><tr><th>Name</th><th>Phone</th><th>Plate</th><th>Taxi</th><th></th></tr></thead>
+                <tbody>
+                @foreach (Driver d in _drivers)
+                {
+                    <tr>
+                        <td>@d.Name</td><td>@d.Phone</td><td>@d.PlateNumber</td><td>@d.TaxiModel</td>
+                        <td><button class="btn btn-sm btn-outline-danger" @onclick="() => DeleteAsync(d)"><Icon Name="trash" /> Delete</button></td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div></div>
+    </div>
+
+    <div class="col-lg-4">
+        <div class="card"><div class="card-body">
+            <h5 class="card-title">Add driver</h5>
+            <input class="form-control mb-2" placeholder="Name" @bind="_new.Name" />
+            <input class="form-control mb-2" placeholder="Phone" @bind="_new.Phone" />
+            <input class="form-control mb-2" placeholder="Plate number" @bind="_new.PlateNumber" />
+            <input class="form-control mb-3" placeholder="Taxi model" @bind="_new.TaxiModel" />
+            <button class="btn btn-primary" @onclick="AddAsync"><Icon Name="plus" /> Add driver</button>
+        </div></div>
+    </div>
+</div>
+
+@code {
+    private List<Driver> _drivers = new();
+    private Driver _new = new();
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        await using AppDb db = await DbFactory.CreateDbContextAsync();
+        _drivers = await db.Drivers.OrderBy(d => d.Name).ToListAsync();
+    }
+
+    private async Task AddAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_new.Name)) return;
+
+        await using AppDb db = await DbFactory.CreateDbContextAsync();
+        db.Drivers.Add(_new);
+        await db.SaveChangesAsync();
+        _new = new Driver();
+        await LoadAsync();
+    }
+
+    private async Task DeleteAsync(Driver driver)
+    {
+        await using AppDb db = await DbFactory.CreateDbContextAsync();
+        db.Drivers.Remove(driver);
+        await db.SaveChangesAsync();
+        await LoadAsync();
+    }
+}

@@ -1,0 +1,136 @@
+@page "/trips"
+@inject IDbContextFactory<AppDb> DbFactory
+@inject EmailService Email
+
+<PageTitle>Trips</PageTitle>
+
+<h2 class="page-title">Trips</h2>
+<p class="page-sub">Assign drivers and track each booking.</p>
+
+@if (_message is not null)
+{
+    <div class="alert alert-info">@_message</div>
+}
+
+<div class="card"><div class="card-body table-responsive">
+    @if (_trips.Count == 0)
+    {
+        <p class="text-muted mb-0">No trips yet. <a href="new-booking">Create a booking</a>.</p>
+    }
+    else
+    {
+        <table class="table">
+            <thead>
+                <tr><th>#</th><th>Passenger</th><th>Route</th><th>Fare</th><th>Status</th><th>Driver</th><th></th></tr>
+            </thead>
+            <tbody>
+            @foreach (Trip t in _trips)
+            {
+                <tr>
+                    <td>@t.Id</td>
+                    <td>@t.PassengerName<br /><small class="text-muted">@t.CreatedAt.ToString("MMM d, h:mm tt")</small></td>
+                    <td class="small">
+                        @Short(t.PickupAddress) &rarr; @Short(t.DropoffAddress)<br />
+                        <span class="text-muted">@t.DistanceKm km, ~@t.DurationMin min</span>
+                    </td>
+                    <td>₱@t.Fare.ToString("N0")</td>
+                    <td><span class="badge badge-@t.Status.ToString().ToLower()">@t.Status</span></td>
+                    <td>
+                        @if (t.Status == TripStatus.Pending)
+                        {
+                            <select class="form-select form-select-sm" @bind="_selectedDriver[t.Id]">
+                                <option value="0">Choose driver...</option>
+                                @foreach (Driver d in _drivers)
+                                {
+                                    <option value="@d.Id">@d.Name (@d.PlateNumber)</option>
+                                }
+                            </select>
+                        }
+                        else
+                        {
+                            @(t.Driver is null ? "-" : $"{t.Driver.Name} ({t.Driver.PlateNumber})")
+                        }
+                    </td>
+                    <td class="text-nowrap">
+                        @if (t.Status == TripStatus.Pending)
+                        {
+                            <button class="btn btn-sm btn-primary" @onclick="() => AssignAsync(t)"><Icon Name="check" /> Assign</button>
+                        }
+                        @if (t.Status == TripStatus.Assigned)
+                        {
+                            <button class="btn btn-sm btn-success" @onclick="() => SetStatusAsync(t, TripStatus.Completed)"><Icon Name="check" /> Complete</button>
+                        }
+                        @if (t.Status is TripStatus.Pending or TripStatus.Assigned)
+                        {
+                            <button class="btn btn-sm btn-outline-secondary" @onclick="() => SetStatusAsync(t, TripStatus.Cancelled)"><Icon Name="x" /> Cancel</button>
+                        }
+                    </td>
+                </tr>
+            }
+            </tbody>
+        </table>
+    }
+</div></div>
+
+@code {
+    private List<Trip> _trips = new();
+    private List<Driver> _drivers = new();
+    private readonly Dictionary<int, int> _selectedDriver = new();
+    private string? _message;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        await using AppDb db = await DbFactory.CreateDbContextAsync();
+        _trips = await db.Trips.Include(t => t.Driver).ToListAsync();
+        _trips = _trips.OrderByDescending(t => t.CreatedAt).ToList();
+        _drivers = await db.Drivers.OrderBy(d => d.Name).ToListAsync();
+        foreach (Trip t in _trips)
+        {
+            _selectedDriver.TryAdd(t.Id, 0);
+        }
+    }
+
+    private async Task AssignAsync(Trip trip)
+    {
+        int driverId = _selectedDriver[trip.Id];
+        if (driverId == 0)
+        {
+            _message = "Choose a driver first.";
+            return;
+        }
+
+        Driver driver = _drivers.First(d => d.Id == driverId);
+
+        await using AppDb db = await DbFactory.CreateDbContextAsync();
+        Trip saved = await db.Trips.FirstAsync(t => t.Id == trip.Id);
+        saved.DriverId = driverId;
+        saved.Status = TripStatus.Assigned;
+        await db.SaveChangesAsync();
+
+        _message = $"Trip #{trip.Id} assigned to {driver.Name}.";
+        if (!string.IsNullOrWhiteSpace(trip.PassengerEmail))
+        {
+            string result = await Email.SendAsync(trip.PassengerEmail, $"Your taxi is on the way (booking #{trip.Id})",
+                $"Hello {trip.PassengerName},\n\nDriver: {driver.Name} ({driver.Phone})\n" +
+                $"Taxi: {driver.TaxiModel}, plate {driver.PlateNumber}\n\nPickup: {trip.PickupAddress}\n\n- LARGA Dispatch");
+            _message += " " + result;
+        }
+
+        await LoadAsync();
+    }
+
+    private async Task SetStatusAsync(Trip trip, TripStatus status)
+    {
+        await using AppDb db = await DbFactory.CreateDbContextAsync();
+        Trip saved = await db.Trips.FirstAsync(t => t.Id == trip.Id);
+        saved.Status = status;
+        await db.SaveChangesAsync();
+        _message = $"Trip #{trip.Id} marked as {status}.";
+        await LoadAsync();
+    }
+
+    // Geocoded addresses are long; show only the first part in the table.
+    private static string Short(string address) => address.Split(',')[0];
+}

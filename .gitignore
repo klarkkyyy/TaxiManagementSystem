@@ -625,3 +625,11 @@ GoogleService-Info.plist
 *.key
 .env.*
 !.env.example
+
+# LARGA.Dispatch local files
+*.db
+appsettings.Local.json
+*.db-shm
+*.db-wal
+*.db-journal
+appsettings.*.local.json

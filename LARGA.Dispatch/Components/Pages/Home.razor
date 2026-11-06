@@ -1,0 +1,116 @@
+﻿@page "/"
+@inject IDbContextFactory<AppDb> DbFactory
+@inject WeatherService Weather
+@inject HolidayService Holidays
+@inject IJSRuntime JS
+
+<PageTitle>Dashboard</PageTitle>
+
+<h2 class="page-title">Dashboard</h2>
+<p class="page-sub">@PhTime.Now.ToString("dddd, MMMM d, yyyy")</p>
+
+<div class="row g-3 mb-4">
+    <div class="col-6 col-lg-3">
+        <div class="card stat-card"><div class="card-body">
+            <div class="stat-icon"><Icon Name="route" /></div>
+            <div><div class="stat-value">@_tripsToday</div><div class="stat-label">Trips today</div></div>
+        </div></div>
+    </div>
+    <div class="col-6 col-lg-3">
+        <div class="card stat-card"><div class="card-body">
+            <div class="stat-icon"><Icon Name="clock" /></div>
+            <div><div class="stat-value">@_pending</div><div class="stat-label">Waiting for driver</div></div>
+        </div></div>
+    </div>
+    <div class="col-6 col-lg-3">
+        <div class="card stat-card"><div class="card-body">
+            <div class="stat-icon"><Icon Name="car" /></div>
+            <div><div class="stat-value">@_active</div><div class="stat-label">On the road</div></div>
+        </div></div>
+    </div>
+    <div class="col-6 col-lg-3">
+        <div class="card stat-card"><div class="card-body">
+            <div class="stat-icon"><Icon Name="wallet" /></div>
+            <div><div class="stat-value">₱@_revenueToday.ToString("N0")</div><div class="stat-label">Completed today</div></div>
+        </div></div>
+    </div>
+</div>
+
+<div class="row g-3">
+    <div class="col-lg-4">
+        <div class="card h-100"><div class="card-body">
+            <h5 class="card-title">Conditions today</h5>
+            @if (!_loaded)
+            {
+                <p class="text-muted">Loading...</p>
+            }
+            else
+            {
+                <p class="mb-2">
+                    <Icon Name="cloud" /> <strong>Weather</strong> <span class="text-muted">(Open-Meteo)</span><br />
+                    @if (_weather is null) { <span class="text-muted">Unavailable</span> }
+                    else { <span>@_weather.Condition, @_weather.TemperatureC.ToString("0")°C, wind @_weather.WindKph.ToString("0") km/h</span> }
+                </p>
+                <p class="mb-2">
+                    <Icon Name="calendar" /> <strong>Holiday</strong> <span class="text-muted">(Nager.Date)</span><br />
+                    @if (_holiday is null) { <span class="text-muted">Not a public holiday</span> }
+                    else { <span>@_holiday</span> }
+                </p>
+                <p class="mb-0 small text-muted">Rain and holidays add 10% each to fares.</p>
+            }
+        </div></div>
+    </div>
+    <div class="col-lg-8">
+        <div class="card h-100"><div class="card-body">
+            <h5 class="card-title">Open bookings</h5>
+            @if (_openTrips.Count == 0)
+            {
+                <p class="text-muted">No open bookings. <a href="new-booking">Create one</a>.</p>
+            }
+            else
+            {
+                <div id="dashboard-map" class="map-box small"></div>
+            }
+        </div></div>
+    </div>
+</div>
+
+@code {
+    private bool _loaded;
+    private int _tripsToday, _pending, _active;
+    private decimal _revenueToday;
+    private List<Trip> _openTrips = new();
+    private WeatherSnapshot? _weather;
+    private string? _holiday;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using AppDb db = await DbFactory.CreateDbContextAsync();
+        List<Trip> trips = await db.Trips.ToListAsync();
+
+        DateTime today = PhTime.Now.Date;
+        List<Trip> todays = trips.Where(t => t.CreatedAt.Date == today).ToList();
+        _tripsToday = todays.Count;
+        _pending = trips.Count(t => t.Status == TripStatus.Pending);
+        _active = trips.Count(t => t.Status == TripStatus.Assigned);
+        _revenueToday = todays.Where(t => t.Status == TripStatus.Completed).Sum(t => t.Fare);
+        _openTrips = trips.Where(t => t.Status is TripStatus.Pending or TripStatus.Assigned).ToList();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+
+        // External APIs are called after the first render so the page appears immediately.
+        _weather = await Weather.GetCurrentAsync();
+        _holiday = await Holidays.GetHolidayNameAsync(PhTime.Now);
+        _loaded = true;
+        StateHasChanged();
+
+        if (_openTrips.Count > 0)
+        {
+            var points = _openTrips.Select(t => new { lat = t.PickupLat, lng = t.PickupLng, label = $"{t.PassengerName}: {t.PickupAddress}" });
+            await JS.InvokeVoidAsync("larga.drawMap", "dashboard-map", points);
+        }
+    }
+}

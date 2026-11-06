@@ -1,0 +1,233 @@
+@page "/new-booking"
+@implements IDisposable
+@inject IDbContextFactory<AppDb> DbFactory
+@inject GeocodingService Geocoding
+@inject RoutingService Routing
+@inject WeatherService Weather
+@inject HolidayService Holidays
+@inject EmailService Email
+@inject IJSRuntime JS
+
+<PageTitle>New Booking</PageTitle>
+
+<h2 class="page-title">New Booking</h2>
+<p class="page-sub">Click the map to drop a pin for the pickup and drop-off points.</p>
+
+<div class="row g-3">
+    <div class="col-xl-4 col-lg-5">
+        <div class="card"><div class="card-body">
+            <div class="mb-3">
+                <label class="form-label">Passenger name</label>
+                <input class="form-control" @bind="_name" />
+            </div>
+            <div class="mb-3">
+                <label class="form-label">Passenger email <span class="text-muted">(for the confirmation)</span></label>
+                <input class="form-control" type="email" @bind="_email" />
+            </div>
+
+            <label class="form-label">Find a place on the map</label>
+            <div class="input-group mb-3">
+                <input class="form-control" placeholder="e.g. SM Mall of Asia" @bind="_search" @bind:event="oninput"
+                       @onkeydown="SearchKeyDown" />
+                <button class="btn btn-outline-primary" type="button" @onclick="SearchAsync" aria-label="Search">
+                    <Icon Name="search" />
+                </button>
+            </div>
+
+            <label class="form-label">Next click sets the</label>
+            <div class="btn-group w-100 mb-3" role="group">
+                <button type="button" class="btn @(_mode == "pickup" ? "btn-primary" : "btn-outline-primary")"
+                        @onclick='() => _mode = "pickup"'>Pickup</button>
+                <button type="button" class="btn @(_mode == "dropoff" ? "btn-primary" : "btn-outline-primary")"
+                        @onclick='() => _mode = "dropoff"'>Drop-off</button>
+            </div>
+
+            <div class="pick-summary">
+                <span class="dot dot-pickup"></span>
+                <div><strong>Pickup</strong><br />@(_pickup?.DisplayName ?? "Not set")</div>
+            </div>
+            <div class="pick-summary">
+                <span class="dot dot-dropoff"></span>
+                <div><strong>Drop-off</strong><br />@(_dropoff?.DisplayName ?? "Not set")</div>
+            </div>
+
+            @if (_error is not null)
+            {
+                <div class="alert alert-danger">@_error</div>
+            }
+
+            <button class="btn btn-primary" @onclick="EstimateAsync" disabled="@(_busy || _pickup is null || _dropoff is null)">
+                @(_busy ? "Working..." : "Get fare estimate")
+            </button>
+        </div></div>
+
+        @if (_saved is not null)
+        {
+            <div class="alert alert-success mt-3">
+                <strong>Booking #@_saved.Id saved.</strong> @_emailStatus
+                <div class="mt-2"><a href="trips">Go to trips</a> to assign a driver.</div>
+            </div>
+        }
+
+        @if (_draft is not null)
+        {
+            <div class="card mt-3"><div class="card-body">
+                <h5 class="card-title">Estimate</h5>
+                <p class="mb-1">
+                    <Icon Name="route" /> @_draft.DistanceKm km
+                    &nbsp; <Icon Name="clock" /> about @_draft.DurationMin min
+                </p>
+                <p class="display-6 mb-1">₱@_draft.Fare.ToString("N0")</p>
+                @if (_draft.FareNote != "")
+                {
+                    <p class="text-muted mb-3">@_draft.FareNote</p>
+                }
+                <button class="btn btn-primary" @onclick="ConfirmAsync" disabled="@_busy">Confirm booking</button>
+            </div></div>
+        }
+    </div>
+
+    <div class="col-xl-8 col-lg-7">
+        <div id="picker-map" class="map-box picking"></div>
+    </div>
+</div>
+
+@code {
+    private const string MapId = "picker-map";
+
+    private string _name = "", _email = "", _search = "";
+    private string _mode = "pickup"; // which point the next map click sets
+    private GeoResult? _pickup, _dropoff;
+    private string? _error, _emailStatus;
+    private bool _busy;
+    private Trip? _draft, _saved;
+    private DotNetObjectReference<NewBooking>? _self;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _self = DotNetObjectReference.Create(this);
+            await JS.InvokeVoidAsync("larga.initPicker", MapId, _self);
+        }
+    }
+
+    // Called from map.js on every map click.
+    [JSInvokable]
+    public async Task OnMapClicked(double lat, double lng)
+    {
+        _error = null;
+        _draft = null; // pins changed, so the old estimate no longer applies
+        _saved = null;
+
+        string kind = _mode;
+        await JS.InvokeVoidAsync("larga.setPin", MapId, kind, lat, lng);
+
+        // Nominatim reverse geocoding: pin coordinates to address.
+        GeoResult point = new(lat, lng, await Geocoding.ReverseAsync(lat, lng));
+        if (kind == "pickup")
+        {
+            _pickup = point;
+            _mode = "dropoff"; // move on to the next point automatically
+        }
+        else
+        {
+            _dropoff = point;
+        }
+
+        StateHasChanged();
+    }
+
+    private async Task SearchKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await SearchAsync();
+    }
+
+    private async Task SearchAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_search)) return;
+
+        _error = null;
+        try
+        {
+            GeoResult? place = await Geocoding.FindAsync(_search);
+            if (place is null) { _error = "No place found with that name."; return; }
+            await JS.InvokeVoidAsync("larga.flyTo", MapId, place.Lat, place.Lng);
+        }
+        catch (Exception ex)
+        {
+            _error = $"Search failed: {ex.Message}";
+        }
+    }
+
+    // Chain of integrations: pins -> Routing -> Weather + Holidays -> FareCalculator
+    private async Task EstimateAsync()
+    {
+        _error = null;
+        _saved = null;
+
+        if (string.IsNullOrWhiteSpace(_name))
+        {
+            _error = "Please enter the passenger name.";
+            return;
+        }
+
+        _busy = true;
+        try
+        {
+            RouteResult? route = await Routing.GetRouteAsync(_pickup!, _dropoff!);
+            if (route is null) { _error = "No driving route found between those two pins."; return; }
+
+            WeatherSnapshot? weather = await Weather.GetCurrentAsync();
+            string? holiday = await Holidays.GetHolidayNameAsync(PhTime.Now);
+            bool raining = weather?.Condition is "Rain" or "Rain showers" or "Thunderstorm";
+
+            FareEstimate fare = FareCalculator.Calculate(route.DistanceKm, route.DurationMin, holiday, raining);
+
+            _draft = new Trip
+            {
+                PassengerName = _name.Trim(),
+                PassengerEmail = _email.Trim(),
+                PickupAddress = _pickup!.DisplayName, PickupLat = _pickup.Lat, PickupLng = _pickup.Lng,
+                DropoffAddress = _dropoff!.DisplayName, DropoffLat = _dropoff.Lat, DropoffLng = _dropoff.Lng,
+                DistanceKm = route.DistanceKm, DurationMin = route.DurationMin,
+                Fare = fare.Total, FareNote = fare.Note
+            };
+        }
+        catch (Exception ex)
+        {
+            _error = $"Could not reach a service: {ex.Message}";
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task ConfirmAsync()
+    {
+        if (_draft is null) return;
+        _busy = true;
+
+        await using AppDb db = await DbFactory.CreateDbContextAsync();
+        db.Trips.Add(_draft);
+        await db.SaveChangesAsync();
+        _saved = _draft;
+
+        _emailStatus = "No passenger email entered, so no confirmation was sent.";
+        if (!string.IsNullOrWhiteSpace(_saved.PassengerEmail))
+        {
+            _emailStatus = await Email.SendAsync(_saved.PassengerEmail, $"Taxi booking #{_saved.Id} received",
+                $"Hello {_saved.PassengerName},\n\nYour taxi booking has been received.\n\n" +
+                $"Pickup: {_saved.PickupAddress}\nDrop-off: {_saved.DropoffAddress}\n" +
+                $"Distance: {_saved.DistanceKm} km (about {_saved.DurationMin} min)\n" +
+                $"Estimated fare: PHP {_saved.Fare:N0} {_saved.FareNote}\n\n" +
+                "A driver will be assigned shortly. - LARGA Dispatch");
+        }
+
+        _draft = null;
+        _busy = false;
+    }
+
+    public void Dispose() => _self?.Dispose();
+}
